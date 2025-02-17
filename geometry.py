@@ -1,202 +1,422 @@
-from ursina import *
-import random
+import pygame
+from pygame.locals import *
+from OpenGL.GL import *
+from OpenGL.GLU import *
+import numpy as np
+import math, random, sys
 
-app = Ursina()
+# ============================
+# Configuración de Pygame y OpenGL
+# ============================
+pygame.init()
+display = (800, 600)
+pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
+clock = pygame.time.Clock()
 
+glMatrixMode(GL_PROJECTION)
+glLoadIdentity()
+gluPerspective(45, (display[0] / display[1]), 0.1, 1000.0)
+glMatrixMode(GL_MODELVIEW)
 
-# Agregar música de fondo
-musica_fondo = Audio('Music.mp3', autoplay=True, loop=True)
-musica_fondo.volume = 0.5  # Ajusta volumen
+# Desactivar el Z-buffer (painter’s algorithm manual)
+glDisable(GL_DEPTH_TEST)
+# Activar blending para transparencias (sombras)
+glEnable(GL_BLEND)
+glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
+# Fuente para texto
+font = pygame.font.SysFont("Arial", 24)
+def draw_text(x, y, text):
+    """Dibuja texto en la ventana en (x,y) en píxeles."""
+    text_surface = font.render(text, True, (255, 255, 255))
+    text_data = pygame.image.tostring(text_surface, "RGBA", True)
+    glWindowPos2d(x, y)
+    glDrawPixels(text_surface.get_width(), text_surface.get_height(), GL_RGBA, GL_UNSIGNED_BYTE, text_data)
 
-# Función para crear un modelo de pirámide personalizado.
-def create_pyramid():
-    vertices = [
-        Vec3(0, 1, 0),      # vértice superior
-        Vec3(-1, -1, 1),    # base frontal izquierda
-        Vec3(1, -1, 1),     # base frontal derecha
-        Vec3(1, -1, -1),    # base trasera derecha
-        Vec3(-1, -1, -1)    # base trasera izquierda
-    ]
-    triangles = [
-        (0, 1, 2),   # cara frontal
-        (0, 2, 3),   # cara derecha
-        (0, 3, 4),   # cara trasera
-        (0, 4, 1),   # cara izquierda
-        (1, 2, 3),   # base (triángulo 1)
-        (1, 3, 4)    # base (triángulo 2)
-    ]
-    return Mesh(vertices=vertices, triangles=triangles)
+# ============================
+# Funciones de ayuda (rotación, culling, painter, etc.)
+# ============================
+def rotation_z(angle):
+    c = math.cos(angle)
+    s = math.sin(angle)
+    return np.array([[ c, -s, 0],
+                     [ s,  c, 0],
+                     [ 0,  0, 1]], dtype=float)
 
-# -- Variables de estado --
-game_over_flag = False
-game_over_text = None
+def backface_cull(triangles, vertices, cam_pos):
+    visibles = []
+    for tri in triangles:
+        v0, v1, v2 = vertices[tri[0]], vertices[tri[1]], vertices[tri[2]]
+        normal = np.cross(v1 - v0, v2 - v0)
+        if np.dot(normal, cam_pos - v0) > 0:
+            visibles.append(tri)
+    return visibles
 
-# -- Configuración del jugador --
-jugador = Entity(
-    model='cube',
-    color=color.azure,
-    scale=1,
-    position=(0,0,0),  # El pivot se ubicará aquí
-    origin_y=-0.5,     # Ajuste para que la base quede en y=0
-    collider='box'
-)
-jugador.velocidad_y = 0
-jugador.altura_salto = 0.3
-jugador.gravedad = 0.01
-jugador.en_suelo = True
+def painter_sort(triangles, vertices):
+    tri_depths = []
+    for tri in triangles:
+        z_avg = (vertices[tri[0]][2] + vertices[tri[1]][2] + vertices[tri[2]][2]) / 3.0
+        tri_depths.append((tri, z_avg))
+    tri_depths.sort(key=lambda t: t[1], reverse=True)
+    return [t for (t, _) in tri_depths]
 
-# -- Suelo (camino) --
-suelo = Entity(
-    model='plane',
-    scale=(1000,1,10),
-    texture='white_cube',
-    texture_scale=(1000,10),
-    collider='box',
-    position=(0,0,0),
-    color=color.cyan  # Aquí se define el color negro
-)
+def draw_object(vertices, triangles, color):
+    glColor4f(*color)
+    glBegin(GL_TRIANGLES)
+    for tri in triangles:
+        for idx in tri:
+            glVertex3fv(vertices[idx])
+    glEnd()
 
+def project_shadow(vertex, light_dir):
+    if light_dir[1] == 0:
+        return vertex.copy()
+    t = -vertex[1] / light_dir[1]
+    return vertex + light_dir * t
 
-# -- Obstáculos: pirámides --
-obstaculos = []
-next_obstacle_spawn = 5
+# ============================
+# Modelos base y escalado
+# ============================
+CUBE_SCALE = 1.0       # Tamaño del cubo jugador
+PYRAMID_SCALE = 0.5    # Tamaño de la pirámide (obstáculo)
 
-# Generar un primer obstáculo.
-initial_obstacle = Entity(
-    model=create_pyramid(),
-    color=color.red,
-    scale=0.5,
-    position=(10, 0.5, 0),
-    collider='box'
-)
-obstaculos.append(initial_obstacle)
+# Cubo (jugador): vértices de -0.5 a 0.5, pivot_offset = [0,0.5,0] para que la base esté en y=0.
+cube_vertices = [
+    np.array([-0.5, -0.5, -0.5]) * CUBE_SCALE,
+    np.array([ 0.5, -0.5, -0.5]) * CUBE_SCALE,
+    np.array([ 0.5,  0.5, -0.5]) * CUBE_SCALE,
+    np.array([-0.5,  0.5, -0.5]) * CUBE_SCALE,
+    np.array([-0.5, -0.5,  0.5]) * CUBE_SCALE,
+    np.array([ 0.5, -0.5,  0.5]) * CUBE_SCALE,
+    np.array([ 0.5,  0.5,  0.5]) * CUBE_SCALE,
+    np.array([-0.5,  0.5,  0.5]) * CUBE_SCALE
+]
+cube_triangles = [
+    (0,1,2), (0,2,3),
+    (4,6,5), (4,7,6),
+    (4,5,1), (4,1,0),
+    (5,6,2), (5,2,1),
+    (6,7,3), (6,3,2),
+    (7,4,0), (7,0,3)
+]
+cube_pivot_offset = np.array([0, 0.5, 0], dtype=float)
 
-# -- Rastro del jugador --
-puntos_rastro = []
-rastro = Entity(model=Mesh(), color=color.yellow, mode='line')
+# Pirámide (obstáculo): vértices con apex en (0,1,0) y base en y=-1, escalados para que la base quede en y=0.
+pyramid_vertices = [
+    np.array([ 0,  1,  0]) * PYRAMID_SCALE,
+    np.array([-1, -1,  1]) * PYRAMID_SCALE,
+    np.array([ 1, -1,  1]) * PYRAMID_SCALE,
+    np.array([ 1, -1, -1]) * PYRAMID_SCALE,
+    np.array([-1, -1, -1]) * PYRAMID_SCALE
+]
+pyramid_triangles = [
+    (0,1,2), (0,2,3), (0,3,4), (0,4,1),
+    (1,2,3), (1,3,4)
+]
+pyramid_pivot_offset = np.array([0, 0.5, 0], dtype=float)
 
-# -- Configuración de la cámara --
-camera.position = Vec3(jugador.x - 10, jugador.y + 5, -20)
-camera.look_at(jugador)
+# Para los fragmentos (mini cubos) usaremos una versión del cubo reducida a la mitad:
+mini_scale = 0.5
+mini_cube_vertices = [v * mini_scale for v in cube_vertices]  # cada vértice reducido
+mini_cube_triangles = cube_triangles[:]  # mismo índice
+mini_cube_pivot_offset = np.array([0, 0.5*mini_scale, 0], dtype=float)  # para que la base esté en y=0
 
-def game_over():
-    """Muestra texto de Game Over y activa la bandera."""
-    global game_over_flag, game_over_text
-    musica_fondo.stop()
-    game_over_flag = True
-    game_over_text = Text(
-        text='Game Over\nPulsa C para reiniciar',
-        origin=(0, 0),
-        scale=2,
-        background=True,
-        color=color.white
-    )
+# ============================
+# Clases de objetos
+# ============================
+class GameObject:
+    def __init__(self, base_vertices, triangles, pos, pivot_offset):
+        self.base_vertices = base_vertices
+        self.triangles = triangles
+        self.pos = np.array(pos, dtype=float)
+        self.pivot_offset = pivot_offset.copy()
+        self.rotation_z = 0.0
 
-def reset_game():
-    global game_over_flag, next_obstacle_spawn, game_over_text
-    
-    # Volver a reproducir la música desde el inicio
-    musica_fondo.play()
+    def get_transformed_vertices(self):
+        R = rotation_z(self.rotation_z)
+        transformed = []
+        for v in self.base_vertices:
+            local = np.dot(R, (v + self.pivot_offset))
+            world = local + self.pos
+            transformed.append(world)
+        return transformed
 
-    # 1. Ocultar/Destruir el texto de Game Over
-    if game_over_text:
-        destroy(game_over_text)
-    
-    game_over_flag = False
-    
-    # 2. Resetear al jugador
-    jugador.x = 0
-    jugador.y = 0
-    jugador.velocidad_y = 0
-    jugador.en_suelo = True
-    
-    # 3. Limpiar obstáculos en pantalla
-    for obs in obstaculos:
-        destroy(obs)
-    obstaculos.clear()
-    
-    # 4. Reiniciar la posición de "spawn"
-    next_obstacle_spawn = 5
+class Player(GameObject):
+    def __init__(self, pos):
+        super().__init__(cube_vertices, cube_triangles, pos, cube_pivot_offset)
+        self.vel_y = 0.0
+        self.on_ground = True
 
-    # 5. Volver a crear el obstáculo inicial
-    initial_obstacle = Entity(
-        model=create_pyramid(),
-        color=color.red,
-        scale=0.5,
-        position=(10, 0.5, 0),
-        collider='box'
-    )
-    obstaculos.append(initial_obstacle)
+class Obstacle(GameObject):
+    def __init__(self, pos):
+        super().__init__(pyramid_vertices, pyramid_triangles, pos, pyramid_pivot_offset)
+        self.passed = False  # para contar puntos solo una vez
 
-    # 6. Vaciar el rastro y reiniciarlo
-    puntos_rastro.clear()
-    rastro.model = Mesh(vertices=[], mode='line')
+# Clase para fragmentos (mini cubos)
+class Fragment:
+    def __init__(self, pos, vel, rotation_z, angular_vel):
+        self.pos = np.array(pos, dtype=float)
+        self.vel = np.array(vel, dtype=float)
+        self.rotation_z = rotation_z
+        self.angular_vel = angular_vel
+    def update(self, dt):
+        self.pos += self.vel * dt
+        # Aplicamos gravedad a la componente Y
+        self.vel[1] -= GRAVITY * dt
+        self.rotation_z += self.angular_vel * dt
 
+    def get_transformed_vertices(self):
+        R = rotation_z(self.rotation_z)
+        transformed = []
+        for v in mini_cube_vertices:
+            local = np.dot(R, (v + mini_cube_pivot_offset))
+            world = local + self.pos
+            transformed.append(world)
+        return transformed
 
-def update():
-    global next_obstacle_spawn
+# ============================
+# Variables globales del juego y cámara
+# ============================
+score = 0
+high_score = 0
+base_speed = 0.07  # velocidad base del jugador
+PLAYER_SPEED = base_speed
+# La cámara se controla con un offset relativo al jugador:
+camera_offset = np.array([-15, 5, -20], dtype=float)
 
-    if game_over_flag:
-        return  # No actualizar si estamos en Game Over
+# Estados del juego: "running", "exploding", "game_over"
+state = "running"
+explosion_start_time = None
+fragments = []  # lista de Fragment
 
-    # Movimiento continuo hacia adelante
-    jugador.x += 0.07
+# ============================
+# Función para generar obstáculos en un rango de X
+# ============================
+def spawn_obstacles_in_range(start_x, end_x):
+    x = start_x
+    while x > end_x:
+        obstacles.append(Obstacle(pos=[x, 0, 0]))
+        x -= random.randint(5, 10)
 
-    # Aplicar gravedad si no está en el suelo
-    if not jugador.en_suelo:
-        jugador.velocidad_y -= jugador.gravedad
-    jugador.y += jugador.velocidad_y
+# ============================
+# Inicialización del juego
+# ============================
+player = Player(pos=[0, 0, 0])
+obstacles = []
+# Generamos un bloque inicial de obstáculos desde x = -30 hasta -300
+spawn_obstacles_in_range(-30, -300)
+current_end_x = -300
 
-    # Comprobar si aterriza en el suelo
-    if jugador.y < 0:
-        jugador.y = 0
-        jugador.velocidad_y = 0
-        jugador.en_suelo = True
+# Dirección de la luz para las sombras
+light_dir = np.array([0.5, -1, 0.5], dtype=float)
+light_dir /= np.linalg.norm(light_dir)
+GRAVITY = 0.01
+JUMP_SPEED = 0.3
 
-    # Actualizar rastro del jugador
-    puntos_rastro.append(Vec3(jugador.x, jugador.y, jugador.z))
-    if len(puntos_rastro) > 1:
-        rastro.model = Mesh(vertices=puntos_rastro, mode='line')
+# Para optimizar el fondo, definimos un límite:
+floor_limit = 200
 
-    # Actualizar la posición de la cámara
-    camera.position = Vec3(jugador.x - 10, jugador.y + 5, -20)
-    camera.look_at(jugador)
+# ============================
+# Función de colisión (AABB 2D)
+# ============================
+def check_collision(p, obs):
+    dx = abs(p.pos[0] - obs.pos[0])
+    dy = abs(p.pos[1] - obs.pos[1])
+    return (dx < 0.6 and dy < 0.6)
 
-    # Verificar colisión con cada obstáculo
-    for obstaculo in obstaculos:
-        if jugador.intersects(obstaculo).hit:
-            game_over()
-            return
+# ============================
+# Dibujo del piso (líneas en y=0) con límite
+# ============================
+def draw_floor_lines():
+    spacing = 5
+    glColor4f(0, 0, 0, 1)
+    for x in range(-floor_limit, floor_limit+1, spacing):
+        glBegin(GL_LINES)
+        glVertex3f(x, 0, -floor_limit)
+        glVertex3f(x, 0, floor_limit)
+        glEnd()
+    for z in range(-floor_limit, floor_limit+1, spacing):
+        glBegin(GL_LINES)
+        glVertex3f(-floor_limit, 0, z)
+        glVertex3f(floor_limit, 0, z)
+        glEnd()
 
-    # Generar nuevos obstáculos dinámicamente
-    if jugador.x > next_obstacle_spawn:
-        spawn_x = jugador.x + 15
-        obstaculo = Entity(
-            model=create_pyramid(),
-            color=color.red,
-            scale=0.5,
-            position=(spawn_x, 0.5, 0),
-            collider='box'
-        )
-        obstaculos.append(obstaculo)
-        next_obstacle_spawn += random.uniform(10, 20)
+# ============================
+# Función para crear fragmentos (mini cubos) a partir del jugador
+# ============================
+def create_fragments_from_player():
+    global fragments
+    # El centro del cubo (jugador) es:
+    center = player.pos + np.array([0, 0.5, 0], dtype=float)
+    # Para subdividir, usamos 2 valores en cada dirección:
+    offsets = []
+    for dx in [-0.25, 0.25]:
+        for dy in [0.25, 0.75]:
+            for dz in [-0.25, 0.25]:
+                offsets.append(np.array([dx, dy, dz]))
+    # Aplicamos la rotación del jugador al offset (recordando el pivot offset ya aplicado)
+    R = rotation_z(player.rotation_z)
+    fragments = []
+    for off in offsets:
+        # La posición mundial del fragmento:
+        world_off = np.dot(R, off + cube_pivot_offset)
+        frag_pos = player.pos + world_off
+        # Dirección: desde el centro del cubo hacia el fragmento
+        dir_vec = frag_pos - center
+        norm = np.linalg.norm(dir_vec)
+        if norm != 0:
+            dir_vec = dir_vec / norm
+        else:
+            dir_vec = np.array([0,1,0], dtype=float)
+        # Asignamos una velocidad inicial: base + un factor aleatorio
+        speed = random.uniform(0.5, 1.5)
+        vel = dir_vec * speed
+        # Añadimos un pequeño componente aleatorio extra
+        vel += np.random.uniform(-0.2, 0.2, size=3)
+        # Angular velocity aleatoria (en radianes/segundo)
+        ang_vel = random.uniform(-math.pi, math.pi)
+        fragments.append(Fragment(frag_pos, vel, player.rotation_z, ang_vel))
 
-    # Eliminar obstáculos que ya quedaron muy atrás
-    for obstaculo in obstaculos.copy():
-        if obstaculo.x < jugador.x - 20:
-            destroy(obstaculo)
-            obstaculos.remove(obstaculo)
+# ============================
+# Bucle principal del juego
+# ============================
+while True:
+    dt = clock.get_time() / 1000.0  # dt en segundos
+    # Manejo de eventos
+    for event in pygame.event.get():
+        if event.type == QUIT:
+            pygame.quit()
+            sys.exit()
+        elif event.type == KEYDOWN:
+            if event.key == K_ESCAPE:
+                pygame.quit()
+                sys.exit()
+            # En estado running: salto
+            if state == "running":
+                if event.key == K_SPACE and player.on_ground:
+                    player.vel_y = JUMP_SPEED
+                    player.on_ground = False
+            # En estado game_over: reiniciar con R
+            if state in ["game_over", "exploding"] and event.key == K_r:
+                if score > high_score:
+                    high_score = score
+                score = 0
+                PLAYER_SPEED = base_speed
+                player = Player(pos=[0, 0, 0])
+                obstacles = []
+                spawn_obstacles_in_range(-30, -300)
+                current_end_x = -300
+                state = "running"
+                fragments = []
+    # Permitir cambiar la perspectiva con las flechas en cualquier estado
+    keys = pygame.key.get_pressed()
+    if keys[K_LEFT]:
+        camera_offset[0] -= 0.2
+    if keys[K_RIGHT]:
+        camera_offset[0] += 0.2
+    if keys[K_UP]:
+        camera_offset[1] += 0.2
+    if keys[K_DOWN]:
+        camera_offset[1] -= 0.2
 
-def input(key):
-    # Si está en Game Over y se pulsa 'c', reiniciamos la partida
-    if game_over_flag and key == 'c':
-        reset_game()
-        return
-    
-    # De lo contrario, si no está en Game Over, el 'space' es para saltar
-    if key == 'space' and jugador.en_suelo and not game_over_flag:
-        jugador.velocidad_y = jugador.altura_salto
-        jugador.en_suelo = False
+    # ============================
+    # Actualización según estado
+    # ============================
+    if state == "running":
+        # Actualizar velocidad según score
+        PLAYER_SPEED = base_speed + (score / 5000.0)
+        player.pos[0] -= PLAYER_SPEED  # El jugador se mueve hacia la izquierda
+        # Actualizar salto y gravedad
+        if not player.on_ground:
+            player.vel_y -= GRAVITY
+        player.pos[1] += player.vel_y
+        if player.pos[1] < 0:
+            player.pos[1] = 0
+            player.vel_y = 0
+            player.on_ground = True
+            player.rotation_z = round(player.rotation_z / (math.pi/2)) * (math.pi/2)
+        if not player.on_ground:
+            player.rotation_z += 0.1
+        # Sumar puntos: cada obstáculo que se pasa (una sola vez)
+        for obs in obstacles:
+            if not obs.passed and player.pos[0] < obs.pos[0]:
+                score += 10
+                obs.passed = True
+        # Generar más obstáculos dinámicamente
+        if player.pos[0] < (current_end_x + 20):
+            new_end_x = current_end_x - 100
+            spawn_obstacles_in_range(current_end_x, new_end_x)
+            current_end_x = new_end_x
+        # Comprobar colisiones
+        for obs in obstacles:
+            if check_collision(player, obs):
+                # Al colisionar, en vez de game_over, iniciamos la explosión
+                create_time = pygame.time.get_ticks()
+                explosion_start_time = create_time
+                create_fragments_from_player()
+                state = "exploding"
+                break
 
-app.run()
+    elif state == "exploding":
+        # Actualizar la animación de fragmentos durante 1.5 segundos
+        current_time = pygame.time.get_ticks()
+        elapsed = current_time - explosion_start_time
+        if elapsed < 1500:
+            for frag in fragments:
+                frag.update(dt)
+        else:
+            # Una vez pasados 1.5 segundos, congelamos la animación y pasamos a game_over
+            state = "game_over"
+        # En estado explosion, no actualizamos el jugador ni los obstáculos (se congelan)
+
+    elif state == "game_over":
+        # En game_over, todo se congela (no se actualizan posiciones)
+        pass
+
+    # ============================
+    # Renderizado (común a todos los estados)
+    # ============================
+    glLoadIdentity()
+    # La cámara se posiciona según el offset actual
+    # Usamos: posición = player.pos + camera_offset (o, si ya explotó, se usa el último player.pos)
+    cam_pos = player.pos + camera_offset
+    gluLookAt(cam_pos[0], cam_pos[1], cam_pos[2],
+              player.pos[0], player.pos[1], player.pos[2],
+              0, 1, 0)
+    glClearColor(0.5, 0.8, 1.0, 1.0)
+    glClear(GL_COLOR_BUFFER_BIT)
+    draw_floor_lines()
+    # En estado "running", dibujamos jugador y obstáculos; en "exploding" y "game_over", el jugador se destruyó
+    if state == "running":
+        # Dibujar jugador
+        p_verts = player.get_transformed_vertices()
+        vis_p = backface_cull(player.triangles, p_verts, cam_pos)
+        sorted_p = painter_sort(vis_p, p_verts)
+        draw_object(p_verts, sorted_p, (0, 0.5, 1, 1))
+    elif state in ["exploding", "game_over"]:
+        # Dibujar los fragmentos (mini cubos)
+        for frag in fragments:
+            frag_verts = frag.get_transformed_vertices()
+            # No aplicamos culling para que se vean todos
+            sorted_frag = painter_sort(cube_triangles, frag_verts)
+            draw_object(frag_verts, sorted_frag, (0, 0.5, 1, 1))
+    # Dibujar obstáculos (siempre se dibujan)
+    for obs in obstacles:
+        o_verts = obs.get_transformed_vertices()
+        sorted_o = painter_sort(obs.triangles, o_verts)
+        draw_object(o_verts, sorted_o, (1, 0, 0, 1))
+        shadow_o = [project_shadow(v, light_dir) for v in o_verts]
+        draw_object(shadow_o, sorted_o, (0, 0, 0, 0.4))
+    # Dibujar la sombra del jugador (solo en running)
+    if state == "running":
+        shadow_p = [project_shadow(v, light_dir) for v in p_verts]
+        draw_object(shadow_p, sorted_p, (0, 0, 0, 0.5))
+    # Si estamos en estado game_over (o explosion terminada), dibujar mensaje de Game Over
+    if state == "game_over":
+        draw_text(10, display[1] - 30, f"Game Over! Score: {score}   Record: {high_score}")
+        draw_text(10, display[1] - 60, "Press R to restart")
+    # Dibujar puntaje (si no es game_over, o incluso también)
+    if state == "running":
+        draw_text(10, display[1] - 30, f"Score: {score}   Record: {high_score}")
+    pygame.display.flip()
+    clock.tick(60)
