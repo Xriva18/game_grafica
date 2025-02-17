@@ -6,9 +6,15 @@ import numpy as np
 import math, random, sys
 
 # ============================
-# Configuración de Pygame y OpenGL
+# Configuración de Pygame, OpenGL y Música
 # ============================
 pygame.init()
+
+# Inicializar el mixer y cargar la música (se reproducirá en bucle)
+pygame.mixer.init()
+pygame.mixer.music.load("Music.mp3")
+pygame.mixer.music.play(-1)  # -1 indica repetición infinita
+
 display = (800, 600)
 pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
 clock = pygame.time.Clock()
@@ -245,6 +251,23 @@ def draw_floor_lines():
 # Función para crear fragmentos (mini cubos) a partir del jugador
 # ============================
 def create_fragments_from_player():
+    """
+    Crea fragmentos a partir de la posición del jugador.
+
+    Esta función toma la posición y rotación actuales del jugador y genera fragmentos
+    que se dispersan desde el centro del jugador. Cada fragmento tiene una posición,
+    velocidad y velocidad angular iniciales calculadas en base a la posición y rotación
+    del jugador, así como un componente aleatorio.
+
+    Variables globales:
+    - fragments: Lista que contendrá los fragmentos generados.
+
+    Parámetros:
+    - Ninguno.
+
+    Retorna:
+    - Ninguno.
+    """
     global fragments
     # El centro del cubo (jugador) es:
     center = player.pos + np.array([0, 0.5, 0], dtype=float)
@@ -296,7 +319,7 @@ while True:
                 if event.key == K_SPACE and player.on_ground:
                     player.vel_y = JUMP_SPEED
                     player.on_ground = False
-            # En estado game_over: reiniciar con R
+            # En estado game_over o exploding: reiniciar con R
             if state in ["game_over", "exploding"] and event.key == K_r:
                 if score > high_score:
                     high_score = score
@@ -308,6 +331,8 @@ while True:
                 current_end_x = -300
                 state = "running"
                 fragments = []
+                # Reiniciamos la música desde el inicio
+                pygame.mixer.music.play(-1)
     # Permitir cambiar la perspectiva con las flechas en cualquier estado
     keys = pygame.key.get_pressed()
     if keys[K_LEFT]:
@@ -350,7 +375,8 @@ while True:
         # Comprobar colisiones
         for obs in obstacles:
             if check_collision(player, obs):
-                # Al colisionar, en vez de game_over, iniciamos la explosión
+                # Al colisionar, detenemos la música y en vez de game_over, iniciamos la explosión
+                pygame.mixer.music.stop()
                 create_time = pygame.time.get_ticks()
                 explosion_start_time = create_time
                 create_fragments_from_player()
