@@ -163,9 +163,9 @@ while True:
         shadow_o = [project_shadow(v, light_dir) for v in o_verts]
         draw_object(shadow_o, sorted_o, (0, 0, 0, 0.4))
     if state == "game_over":
-        draw_text(10, display[1] - 30, f"Game Over! Puntuación: {score}   Record: {high_score}", font)
+        draw_text(10, display[1] - 30, f"Game Over! P: {score}   R: {high_score}", font)
         draw_text(10, display[1] - 60, "Presiona R para reiniciar", font)
     if state == "running":
-        draw_text(10, display[1] - 30, f"SPuntuación: {score}   Record: {high_score}", font)
+        draw_text(10, display[1] - 30, f"Puntuación: {score}   Record: {high_score}", font)
     pygame.display.flip()
     clock.tick(60)
