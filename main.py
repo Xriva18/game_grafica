@@ -70,6 +70,7 @@ while True:
                 if event.key == K_SPACE and player.on_ground:
                     player.vel_y = JUMP_SPEED
                     player.on_ground = False
+            # Al reiniciar el juego (estado "exploding" o "game_over")
             if state in ["exploding", "game_over"] and event.key == K_r:
                 if score > high_score:
                     high_score = score
@@ -81,6 +82,8 @@ while True:
                 current_end_x = -300
                 state = "running"
                 fragments = []
+                # Reinicia la música desde el inicio
+                pygame.mixer.music.play(-1)
     # Cambiar perspectiva con las flechas
     keys = pygame.key.get_pressed()
     if keys[K_LEFT]:
@@ -114,7 +117,10 @@ while True:
             spawn_obstacles_in_range(current_end_x, new_end_x)
             current_end_x = new_end_x
         for obs in obstacles:
+            # Detección de colisión (AABB simple)
             if abs(player.pos[0] - obs.pos[0]) < 0.6 and abs(player.pos[1] - obs.pos[1]) < 0.6:
+                # Al colisionar, detenemos la música
+                pygame.mixer.music.stop()
                 explosion_start_time = pygame.time.get_ticks()
                 fragments = create_fragments_from_player(player)
                 state = "exploding"
@@ -142,24 +148,24 @@ while True:
         p_verts = player.get_transformed_vertices()
         vis_p = backface_cull(player.triangles, p_verts, cam_pos)
         sorted_p = painter_sort(vis_p, p_verts)
-        draw_object(p_verts, sorted_p, (0,0.5,1,1))
+        draw_object(p_verts, sorted_p, (0, 0.5, 1, 1))
         shadow_p = [project_shadow(v, light_dir) for v in p_verts]
-        draw_object(shadow_p, sorted_p, (0,0,0,0.5))
+        draw_object(shadow_p, sorted_p, (0, 0, 0, 0.5))
     elif state in ["exploding", "game_over"]:
         for frag in fragments:
             frag_verts = frag.get_transformed_vertices()
             sorted_frag = painter_sort(cube_triangles, frag_verts)
-            draw_object(frag_verts, sorted_frag, (0,0.5,1,1))
+            draw_object(frag_verts, sorted_frag, (0, 0.5, 1, 1))
     for obs in obstacles:
         o_verts = obs.get_transformed_vertices()
         sorted_o = painter_sort(obs.triangles, o_verts)
-        draw_object(o_verts, sorted_o, (1,0,0,1))
+        draw_object(o_verts, sorted_o, (1, 0, 0, 1))
         shadow_o = [project_shadow(v, light_dir) for v in o_verts]
-        draw_object(shadow_o, sorted_o, (0,0,0,0.4))
+        draw_object(shadow_o, sorted_o, (0, 0, 0, 0.4))
     if state == "game_over":
-        draw_text(10, display[1]-30, f"Game Over! Score: {score}   Record: {high_score}", font)
-        draw_text(10, display[1]-60, "Press R to restart", font)
+        draw_text(10, display[1] - 30, f"Game Over! Score: {score}   Record: {high_score}", font)
+        draw_text(10, display[1] - 60, "Press R to restart", font)
     if state == "running":
-        draw_text(10, display[1]-30, f"Score: {score}   Record: {high_score}", font)
+        draw_text(10, display[1] - 30, f"Score: {score}   Record: {high_score}", font)
     pygame.display.flip()
     clock.tick(60)
