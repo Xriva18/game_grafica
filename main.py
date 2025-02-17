@@ -19,7 +19,6 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 import numpy as np
 import math, random, sys
-
 import time
 
 # Importar configuraciones
@@ -115,6 +114,8 @@ while True:
                 current_end_x = -300
                 state = "running"
                 fragments = []
+                # Reinicia la música desde el inicio.
+                pygame.mixer.music.play(-1)
     # Permitir cambiar la perspectiva con las flechas (modifica camera_offset)
     keys = pygame.key.get_pressed()
     if keys[K_LEFT]:
@@ -156,6 +157,8 @@ while True:
         # Comprobar colisiones: si el jugador colisiona con algún obstáculo...
         for obs in obstacles:
             if abs(player.pos[0] - obs.pos[0]) < 0.6 and abs(player.pos[1] - obs.pos[1]) < 0.6:
+                # Detener la música al colisionar.
+                pygame.mixer.music.stop()
                 # Se inicia la animación de explosión (fragmentación del cubo).
                 explosion_start_time = pygame.time.get_ticks()
                 fragments = create_fragments_from_player(player)
