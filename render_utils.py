@@ -78,23 +78,22 @@ def project_shadow(vertex, light_dir):
     t = -vertex[1] / light_dir[1]
     return vertex + light_dir * t
 
-def draw_floor_lines(floor_limit, spacing=5):
+def draw_floor_lines(floor_limit):
+    floor_limit_ancho = 2
     """
-    Dibuja líneas para representar el piso.
-    Se dibujan líneas paralelas a los ejes X y Z en el rango [-floor_limit, floor_limit].
-    Esto muestra una cuadrícula limitada, en vez de un piso infinito.
+    Dibuja el piso como un cuadrado lleno.
+    El piso se extiende desde -floor_limit hasta floor_limit en los ejes X y Z,
+    y se renderiza con un color gris (70% opaco).
     """
-    glColor4f(0, 0, 0, 1)
-    for x in range(-floor_limit, floor_limit+1, spacing):
-        glBegin(GL_LINES)
-        glVertex3f(x, 0, -floor_limit)
-        glVertex3f(x, 0, floor_limit)
-        glEnd()
-    for z in range(-floor_limit, floor_limit+1, spacing):
-        glBegin(GL_LINES)
-        glVertex3f(-floor_limit, 0, z)
-        glVertex3f(floor_limit, 0, z)
-        glEnd()
+    # Color gris con un 70% de opacidad (transparencia del 30%)
+    glColor4f(0, 0, 0, 0.3)
+    glBegin(GL_QUADS)
+    glVertex3f(-floor_limit, 0, -floor_limit_ancho)
+    glVertex3f(10, 0, -floor_limit_ancho)
+    glVertex3f(10, 0, floor_limit_ancho)
+    glVertex3f(-floor_limit, 0, floor_limit_ancho)
+    glEnd()
+
 
 def draw_text(x, y, text, font):
     """
