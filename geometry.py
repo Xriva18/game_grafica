@@ -5,9 +5,9 @@ from OpenGL.GLU import *
 import numpy as np
 import math, random, sys
 
-# ---------------------------------------------------
-# Configuración de pygame y ventana OpenGL
-# ---------------------------------------------------
+# ----------------------------
+# Configuración de Pygame y OpenGL
+# ----------------------------
 pygame.init()
 display = (800, 600)
 pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
@@ -15,28 +15,39 @@ clock = pygame.time.Clock()
 
 glMatrixMode(GL_PROJECTION)
 glLoadIdentity()
-gluPerspective(45, (display[0]/display[1]), 0.1, 1000.0)
+gluPerspective(45, (display[0] / display[1]), 0.1, 1000.0)
 glMatrixMode(GL_MODELVIEW)
 
-# Desactivamos el z-buffer (usamos painter’s algorithm manual)
+# Desactivar el Z-buffer (usamos painter’s algorithm manual)
 glDisable(GL_DEPTH_TEST)
 
-# Activamos blending para la sombra semitransparente
+# Activar blending para transparencias (sombra)
 glEnable(GL_BLEND)
 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-# ---------------------------------------------------
+# Fuente para renderizar texto
+font = pygame.font.SysFont("Arial", 24)
+
+def draw_text(x, y, text):
+    """
+    Dibuja un texto en la posición (x,y) de la ventana (en píxeles).
+    Usa glWindowPos2d para posicionarlo.
+    """
+    text_surface = font.render(text, True, (255, 255, 255))
+    text_data = pygame.image.tostring(text_surface, "RGBA", True)
+    glWindowPos2d(x, y)
+    glDrawPixels(text_surface.get_width(), text_surface.get_height(), GL_RGBA, GL_UNSIGNED_BYTE, text_data)
+
+# ----------------------------
 # Funciones de ayuda (rotación, culling, painter, etc.)
-# ---------------------------------------------------
+# ----------------------------
 def rotation_z(angle):
-    """Matriz de rotación 3x3 alrededor de Z."""
+    """Devuelve la matriz 3x3 de rotación alrededor del eje Z."""
     c = math.cos(angle)
     s = math.sin(angle)
-    return np.array([
-        [ c, -s, 0],
-        [ s,  c, 0],
-        [ 0,  0, 1]
-    ], dtype=float)
+    return np.array([[ c, -s, 0],
+                     [ s,  c, 0],
+                     [ 0,  0, 1]], dtype=float)
 
 def backface_cull(triangles, vertices, cam_pos):
     """Devuelve los triángulos que miran hacia la cámara."""
@@ -54,7 +65,7 @@ def backface_cull(triangles, vertices, cam_pos):
     return visibles
 
 def painter_sort(triangles, vertices):
-    """Ordena los triángulos según la profundidad promedio (z)."""
+    """Ordena los triángulos de más lejos a más cerca según la profundidad (z)."""
     tri_depths = []
     for tri in triangles:
         z_avg = (vertices[tri[0]][2] + vertices[tri[1]][2] + vertices[tri[2]][2]) / 3.0
@@ -63,7 +74,7 @@ def painter_sort(triangles, vertices):
     return [t for (t, _) in tri_depths]
 
 def draw_object(vertices, triangles, color):
-    """Dibuja los triángulos de un objeto con un color RGBA."""
+    """Dibuja un objeto (sus triángulos) con un color RGBA."""
     glColor4f(*color)
     glBegin(GL_TRIANGLES)
     for tri in triangles:
@@ -78,11 +89,11 @@ def project_shadow(vertex, light_dir):
     t = -vertex[1] / light_dir[1]
     return vertex + light_dir * t
 
-# ---------------------------------------------------
-# Modelos (cubo y pirámide) con escalas parecidas
-# ---------------------------------------------------
-CUBE_SCALE = 1.0
-PYRAMID_SCALE = 0.5
+# ----------------------------
+# Modelos base y escalado (cubo y pirámide)
+# ----------------------------
+CUBE_SCALE = 1.0       # Cubo (jugador) sin escalado extra
+PYRAMID_SCALE = 0.5    # Pirámide reducida para ser casi del mismo tamaño
 
 # --- Cubo ---
 cube_vertices = [
@@ -96,12 +107,12 @@ cube_vertices = [
     np.array([-0.5,  0.5,  0.5]) * CUBE_SCALE
 ]
 cube_triangles = [
-    (0,1,2), (0,2,3),      # cara inferior
-    (4,6,5), (4,7,6),      # cara superior
-    (4,5,1), (4,1,0),      # cara frontal
-    (5,6,2), (5,2,1),      # cara derecha
-    (6,7,3), (6,3,2),      # cara trasera
-    (7,4,0), (7,0,3)       # cara izquierda
+    (0,1,2), (0,2,3),
+    (4,6,5), (4,7,6),
+    (4,5,1), (4,1,0),
+    (5,6,2), (5,2,1),
+    (6,7,3), (6,3,2),
+    (7,4,0), (7,0,3)
 ]
 cube_pivot_offset = np.array([0, 0.5, 0], dtype=float)
 
@@ -119,9 +130,9 @@ pyramid_triangles = [
 ]
 pyramid_pivot_offset = np.array([0, 0.5, 0], dtype=float)
 
-# ---------------------------------------------------
+# ----------------------------
 # Clases de objetos (jugador y obstáculo)
-# ---------------------------------------------------
+# ----------------------------
 class GameObject:
     def __init__(self, base_vertices, triangles, pos, pivot_offset):
         self.base_vertices = base_vertices
@@ -131,7 +142,7 @@ class GameObject:
         self.rotation_z = 0.0
 
     def get_transformed_vertices(self):
-        """Aplica rotación Z, pivot y traslación."""
+        """Aplica rotación, pivot y traslación a los vértices."""
         R = rotation_z(self.rotation_z)
         transformed = []
         for v in self.base_vertices:
@@ -149,45 +160,56 @@ class Player(GameObject):
 class Obstacle(GameObject):
     def __init__(self, pos):
         super().__init__(pyramid_vertices, pyramid_triangles, pos, pyramid_pivot_offset)
+        self.passed = False  # Para contar puntos una sola vez
 
-# ---------------------------------------------------
+# ----------------------------
+# Variables globales de juego
+# ----------------------------
+score = 0
+high_score = 0
+base_speed = 0.07  # Velocidad base del jugador
+
+# ----------------------------
 # Función para generar obstáculos en un rango de X
-# ---------------------------------------------------
+# ----------------------------
 def spawn_obstacles_in_range(start_x, end_x):
     """
-    Genera pirámides desde start_x hasta end_x (de mayor a menor),
-    separadas por 5..10 unidades aleatoriamente.
-    Ej: start_x=-30, end_x=-100
+    Genera pirámides desde start_x hasta end_x (con x decreciente),
+    separadas aleatoriamente entre 5 y 10 unidades.
     """
     x = start_x
     while x > end_x:
         obstacles.append(Obstacle(pos=[x, 0, 0]))
         x -= random.randint(5, 10)
 
-# ---------------------------------------------------
+# ----------------------------
 # Inicialización del juego
-# ---------------------------------------------------
+# ----------------------------
 player = Player(pos=[0, 0, 0])  # El jugador inicia en x=0
 obstacles = []
 
-# Dirección de la luz para la sombra
+# Dirección de la luz para sombras
 light_dir = np.array([0.5, -1, 0.5], dtype=float)
 light_dir /= np.linalg.norm(light_dir)
 
 GRAVITY = 0.01
 JUMP_SPEED = 0.3
-PLAYER_SPEED = 0.07  # El jugador se moverá hacia la izquierda
+
+# El jugador se mueve hacia la izquierda
+# La velocidad se incrementará en función de la puntuación
+# Calcularemos: speed = base_speed + (score / 5000)
+PLAYER_SPEED = base_speed
 
 game_over = False
 game_over_printed = False
 
-# 1) Generamos un “bloque” inicial de obstáculos desde -30 hasta -300
+# Generamos un bloque inicial de obstáculos desde x = -30 hasta -300
 spawn_obstacles_in_range(-30, -300)
-current_end_x = -300  # Hasta dónde hemos generado
+current_end_x = -300  # Hasta dónde se han generado
 
-# ---------------------------------------------------
+# ----------------------------
 # Función de colisión (AABB 2D)
-# ---------------------------------------------------
+# ----------------------------
 def check_collision(p, obs):
     dx = abs(p.pos[0] - obs.pos[0])
     dy = abs(p.pos[1] - obs.pos[1])
@@ -195,9 +217,9 @@ def check_collision(p, obs):
         return True
     return False
 
-# ---------------------------------------------------
-# Dibujo del piso con líneas (y=0)
-# ---------------------------------------------------
+# ----------------------------
+# Dibujar el piso (líneas en y=0)
+# ----------------------------
 def draw_floor_lines():
     spacing = 5
     glColor4f(0, 0, 0, 1)
@@ -212,9 +234,9 @@ def draw_floor_lines():
         glVertex3f( 1000, 0, z)
         glEnd()
 
-# ---------------------------------------------------
-# Bucle principal
-# ---------------------------------------------------
+# ----------------------------
+# Bucle principal del juego
+# ----------------------------
 while True:
     # Manejo de eventos
     for event in pygame.event.get():
@@ -229,30 +251,50 @@ while True:
             if event.key == K_SPACE and player.on_ground and not game_over:
                 player.vel_y = JUMP_SPEED
                 player.on_ground = False
+            # Reiniciar tras Game Over
+            if game_over and event.key == K_r:
+                # Actualizamos record si corresponde
+                if score > high_score:
+                    high_score = score
+                # Reiniciamos variables
+                score = 0
+                PLAYER_SPEED = base_speed
+                player.pos = np.array([0, 0, 0], dtype=float)
+                player.vel_y = 0
+                player.on_ground = True
+                player.rotation_z = 0.0
+                obstacles = []
+                spawn_obstacles_in_range(-30, -300)
+                current_end_x = -300
+                game_over = False
+                game_over_printed = False
 
-    # Si estamos en Game Over, solo dibujamos para poder salir con ESC
+    # Si estamos en Game Over, dibujamos mensaje y puntos
     if game_over:
-        if not game_over_printed:
-            print("Game Over. Pulsa ESC para salir.")
-            game_over_printed = True
-        # Dibujamos escena "congelada"
         glLoadIdentity()
-        # ********* CÁMARA MÁS CERCA DEL JUGADOR *********
-        gluLookAt(player.pos[0] - 15, 5, -20,  # <--- offset reducido
-                  player.pos[0], 0, 0,
+        # Cámara más cerca del jugador
+        gluLookAt(player.pos[0] - 15, 5, -20,
+                  player.pos[0], player.pos[1], player.pos[2],
                   0, 1, 0)
         glClearColor(0.5, 0.8, 1.0, 1.0)
         glClear(GL_COLOR_BUFFER_BIT)
         draw_floor_lines()
+        # Dibujar mensaje de Game Over (usando coordenadas de ventana)
+        draw_text(10, display[1] - 30, f"Game Over! Score: {score}   Record: {high_score}")
+        draw_text(10, display[1] - 60, "Press R to restart")
         pygame.display.flip()
         clock.tick(60)
         continue
 
-    # --- LÓGICA DEL JUEGO ---
+    # ----------------------------
+    # Lógica del juego
+    # ----------------------------
+    # Actualizar velocidad según score (más puntos = mayor velocidad)
+    PLAYER_SPEED = base_speed + (score / 5000.0)
     # El jugador se mueve hacia la izquierda
     player.pos[0] -= PLAYER_SPEED
 
-    # Aplicar gravedad/salto
+    # Aplicar gravedad y salto
     if not player.on_ground:
         player.vel_y -= GRAVITY
     player.pos[1] += player.vel_y
@@ -260,12 +302,17 @@ while True:
         player.pos[1] = 0
         player.vel_y = 0
         player.on_ground = True
-        # Ajustar rotación al múltiplo de 90°
         player.rotation_z = round(player.rotation_z / (math.pi/2)) * (math.pi/2)
     if not player.on_ground:
         player.rotation_z += 0.1
 
-    # Generar más obstáculos si el jugador se acerca al final del rango actual
+    # Verificar si el jugador pasa por un obstáculo (para sumar puntos)
+    for obs in obstacles:
+        if not obs.passed and player.pos[0] < obs.pos[0]:
+            score += 10
+            obs.passed = True
+
+    # Generar más obstáculos dinámicamente
     if player.pos[0] < (current_end_x + 20):
         new_end_x = current_end_x - 100
         spawn_obstacles_in_range(current_end_x, new_end_x)
@@ -277,42 +324,42 @@ while True:
             game_over = True
             break
 
-    # --- RENDERIZADO ---
+    # ----------------------------
+    # Renderizado
+    # ----------------------------
     glLoadIdentity()
-    # ********* CÁMARA MÁS CERCA DEL JUGADOR *********
-    gluLookAt(player.pos[0] - 15, 5, -20,  # <--- offset reducido
+    # Cámara: ahora más cerca del jugador (offset de -15 en X)
+    gluLookAt(player.pos[0] - 15, 5, -20,
               player.pos[0], player.pos[1], player.pos[2],
               0, 1, 0)
 
-    # Limpiamos pantalla con color celeste
     glClearColor(0.5, 0.8, 1.0, 1.0)
     glClear(GL_COLOR_BUFFER_BIT)
-
-    # Dibujamos el piso
     draw_floor_lines()
 
-    # Posición aproximada de la cámara (para culling)
+    # Posición aproximada de la cámara para culling
     cam_pos = np.array([player.pos[0] - 15, 5, -20], dtype=float)
 
-    # Dibujamos el jugador (backface culling + painter)
+    # Dibujar jugador (con backface culling y painter sort)
     p_verts = player.get_transformed_vertices()
     visible_p = backface_cull(player.triangles, p_verts, cam_pos)
     sorted_p = painter_sort(visible_p, p_verts)
-    draw_object(p_verts, sorted_p, (0, 0.5, 1, 1))  # Cubo en azul
+    draw_object(p_verts, sorted_p, (0, 0.5, 1, 1))  # Cubo azul
 
-    # Sombra del jugador
+    # Dibujar sombra del jugador
     shadow_p = [project_shadow(v, light_dir) for v in p_verts]
     draw_object(shadow_p, sorted_p, (0, 0, 0, 0.5))
 
-    # Dibujamos cada pirámide
+    # Dibujar cada obstáculo (pirámides)
     for obs in obstacles:
         o_verts = obs.get_transformed_vertices()
-        # Omitimos culling para que siempre se vean
         sorted_o = painter_sort(obs.triangles, o_verts)
-        draw_object(o_verts, sorted_o, (1, 0, 0, 1))  # Rojo
-        # Sombra
+        draw_object(o_verts, sorted_o, (1, 0, 0, 1))  # Pirámide roja
         shadow_o = [project_shadow(v, light_dir) for v in o_verts]
         draw_object(shadow_o, sorted_o, (0, 0, 0, 0.4))
+
+    # Dibujar el puntaje en pantalla (en la esquina superior izquierda)
+    draw_text(10, display[1] - 30, f"Score: {score}   Record: {high_score}")
 
     pygame.display.flip()
     clock.tick(60)
